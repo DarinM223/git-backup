@@ -27,6 +27,7 @@ executable git-scraper
                      , filepath
                      , lens
                      , lens-aeson
+                     , mtl
                      , process
                      , scheduler
                      , text

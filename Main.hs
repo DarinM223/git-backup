@@ -4,8 +4,8 @@
 module Main where
 
 import Control.Lens
-import Control.Monad (unless, void)
 import Control.Monad.IO.Unlift
+import Control.Monad.Reader
 import Control.Scheduler
 import Data.Aeson
 import Data.Aeson.Lens
@@ -19,21 +19,20 @@ import qualified Data.Text as T
 
 data Downloader m a = Downloader
   { getProjects     :: String -> m [a]
-  , projectInFolder :: FilePath -> a -> m Bool
-  , cloneProject    :: FilePath -> a -> m ()
-  , pullProject     :: FilePath -> a -> m ()
+  , projectInFolder :: a -> m Bool
+  , cloneProject    :: a -> m ()
+  , pullProject     :: a -> m ()
   }
 
-updateProjects
-  :: MonadUnliftIO m => Comp -> FilePath -> Downloader m a -> String -> m ()
-updateProjects comp cwd Downloader{..} username =
+updateProjects :: MonadUnliftIO m => Downloader m a -> Comp -> String -> m ()
+updateProjects Downloader{..} comp username =
   getProjects username >>= traverseConcurrently_ comp handleProject
  where
-  handleProject p = projectInFolder cwd p >>= \case
-    True  -> pullProject cwd p
-    False -> cloneProject cwd p >> pullProject cwd p
+  handleProject p = projectInFolder p >>= \case
+    True  -> pullProject p
+    False -> cloneProject p >> pullProject p
 
-gitlabDownloader :: Downloader IO Value
+gitlabDownloader :: Downloader (ReaderT FilePath IO) Value
 gitlabDownloader = Downloader
   { getProjects     = getProjects'
   , projectInFolder = projectInFolder'
@@ -46,31 +45,30 @@ gitlabDownloader = Downloader
   -- TODO(DarinM223): add authentication
   getProjects' username
     =   (^.. responseBody . values)
-    <$> get (baseUrl ++ "/users/" ++ username ++ "/projects")
+    <$> liftIO (get (baseUrl ++ "/users/" ++ username ++ "/projects"))
 
-  projectInFolder' cwd value =
-    maybe (pure False) (folderExists cwd) (value ^? key "path" . _String)
-  cloneProject' cwd value = maybe (pure ()) (cloneGitProject cwd)
-    (value ^? key "http_url_to_repo" . _String)
-  pullProject' cwd value =
-    maybe (pure ()) (pullGitProject cwd) (value ^? key "path" . _String)
+  projectInFolder' value =
+    maybe (pure False) folderExists (value ^? key "path" . _String)
+  cloneProject' value =
+    maybe (pure ()) cloneGitProject (value ^? key "http_url_to_repo" . _String)
+  pullProject' value =
+    maybe (pure ()) pullGitProject (value ^? key "path" . _String)
 
-folderExists :: FilePath -> Text -> IO Bool
-folderExists cwd folder = doesPathExist $ cwd </> T.unpack folder
+folderExists :: Text -> ReaderT FilePath IO Bool
+folderExists folder = ask >>= liftIO . doesPathExist . (</> T.unpack folder)
 
-cloneGitProject :: FilePath -> Text -> IO ()
-cloneGitProject cwd url = do
+cloneGitProject :: Text -> ReaderT FilePath IO ()
+cloneGitProject url = ask >>= \cwd -> liftIO $ do
   (_, _, _, p) <- createProcess
     (shell $ "git clone " ++ T.unpack url) { cwd = Just cwd }
   void $ waitForProcess p
 
-pullGitProject :: FilePath -> Text -> IO ()
-pullGitProject cwd folder = do
+pullGitProject :: Text -> ReaderT FilePath IO ()
+pullGitProject folder = asks (</> T.unpack folder) >>= \path -> liftIO $ do
   (_, _, _, p1) <- createProcess (shell "git fetch --all") { cwd = Just path }
   void $ waitForProcess p1
   (_, _, _, p2) <- createProcess (shell "git pull --all") { cwd = Just path }
   void $ waitForProcess p2
- where path = cwd </> T.unpack folder
 
 createFolderIfNotExists :: FilePath -> String -> IO FilePath
 createFolderIfNotExists path ext = do
@@ -82,7 +80,7 @@ main :: IO ()
 main = do
   homeDir <- getCurrentDirectory
   gitlabPath <- createFolderIfNotExists homeDir "gitlab"
-  updateProjects (ParN 10) gitlabPath gitlabDownloader username
+  runReaderT (updateProjects gitlabDownloader (ParN 10) username) gitlabPath
  where username = "DarinM223"
 
 --resp <- get "http://gitlab.com/api/v4/users/DarinM223/projects"
