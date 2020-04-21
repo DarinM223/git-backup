@@ -1,0 +1,1 @@
+--restart=git-scraper.cabal -c cabal v2-repl
