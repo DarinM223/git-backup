@@ -23,6 +23,7 @@ executable git-scraper
   -- other-extensions:
   build-depends:       base >=4.14 && <4.15
                      , aeson
+                     , bytestring
                      , directory
                      , filepath
                      , lens

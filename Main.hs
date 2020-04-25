@@ -9,12 +9,14 @@ import Control.Monad.Reader
 import Control.Scheduler
 import Data.Aeson
 import Data.Aeson.Lens
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.List (elemIndex)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Network.Wreq
 import System.FilePath
 import System.Directory
 import System.Process
+import qualified Data.ByteString.Char8 as BS
 import qualified Data.Text as T
 
 data Downloader m a = Downloader
@@ -42,16 +44,27 @@ gitlabDownloader accessToken = Downloader
  where
   baseUrl = "http://gitlab.com/api/v4"
   projectUrl username = baseUrl ++ "/users/" ++ username ++ "/projects"
+  requestParams = mconcat
+    [ "?pagination=keyset"
+    , "&per_page=50"
+    , "&order_by=id"
+    , "&sort=asc"
+    , "&private_token="
+    ]
   url username = maybe
     (projectUrl username)
-    ((projectUrl username ++ "?private_token=") ++)
+    ((projectUrl username ++ requestParams) ++)
     accessToken
   privateUrl token username repo
     =  "https://gitlab-ci-token:" <> token <> "@gitlab.com/"
     <> username <> "/" <> repo <> ".git"
 
-  getProjects' username =
-    liftIO $ (^.. responseBody . values) <$> get (url username)
+  getProjects' username = liftIO $ go $ url username
+   where
+    go link = do
+      resp <- get link
+      let result = resp ^.. responseBody . values
+      maybe (pure result) (fmap (result ++) . go) $ linkHeader resp
   projectInFolder' value =
     maybe (pure False) folderExists (value ^? key "path" . _String)
   cloneProject' value = case (accessToken, namespace, repoName) of
@@ -87,6 +100,14 @@ createFolderIfNotExists path ext = do
   return path'
  where path' = path </> ext
 
+linkHeader :: Response a -> Maybe String
+linkHeader value = trim . fst . flip splitAt resp <$> elemIndex ';' resp
+ where
+  resp = BS.unpack $ value ^. responseHeader "Links"
+  trim []  = []
+  trim [_] = []
+  trim xs  = tail (init xs)
+
 main :: IO ()
 main = do
   homeDir <- getCurrentDirectory
@@ -97,11 +118,3 @@ main = do
   flip runReaderT gitlabPath $
     updateProjects (gitlabDownloader gitlabToken) (ParN 10) username
  where username = "DarinM223"
-
---resp <- get "http://gitlab.com/api/v4/users/DarinM223/projects"
---print $ head (resp ^.. responseBody . values) ^? key "path" . _String
--- print $ gitlabRepos resp
-
-gitlabRepos :: AsValue body => Response body -> [Text]
-gitlabRepos = mapMaybe (^? key "http_url_to_repo" . _String)
-            . (^.. responseBody . values)
