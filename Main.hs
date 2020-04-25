@@ -9,7 +9,7 @@ import Control.Monad.Reader
 import Control.Scheduler
 import Data.Aeson
 import Data.Aeson.Lens
-import Data.Maybe (mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import Network.Wreq
 import System.FilePath
@@ -32,8 +32,8 @@ updateProjects Downloader{..} comp username =
     True  -> pullProject p
     False -> cloneProject p >> pullProject p
 
-gitlabDownloader :: Downloader (ReaderT FilePath IO) Value
-gitlabDownloader = Downloader
+gitlabDownloader :: Maybe String -> Downloader (ReaderT FilePath IO) Value
+gitlabDownloader accessToken = Downloader
   { getProjects     = getProjects'
   , projectInFolder = projectInFolder'
   , cloneProject    = cloneProject'
@@ -41,16 +41,27 @@ gitlabDownloader = Downloader
   }
  where
   baseUrl = "http://gitlab.com/api/v4"
+  projectUrl username = baseUrl ++ "/users/" ++ username ++ "/projects"
+  url username = maybe
+    (projectUrl username)
+    ((projectUrl username ++ "?private_token=") ++)
+    accessToken
+  privateUrl token username repo
+    =  "https://gitlab-ci-token:" <> token <> "@gitlab.com/"
+    <> username <> "/" <> repo <> ".git"
 
-  -- TODO(DarinM223): add authentication
-  getProjects' username
-    =   (^.. responseBody . values)
-    <$> liftIO (get (baseUrl ++ "/users/" ++ username ++ "/projects"))
-
+  getProjects' username =
+    liftIO $ (^.. responseBody . values) <$> get (url username)
   projectInFolder' value =
     maybe (pure False) folderExists (value ^? key "path" . _String)
-  cloneProject' value =
-    maybe (pure ()) cloneGitProject (value ^? key "http_url_to_repo" . _String)
+  cloneProject' value = case (accessToken, namespace, repoName) of
+    (Just token, Just user, Just repo) ->
+      cloneGitProject $ privateUrl (T.pack token) user repo
+    _ -> maybe (pure ()) cloneGitProject urlValue
+   where
+    namespace = value ^? key "namespace" . key "path" . _String
+    repoName = value ^? key "path" . _String
+    urlValue = value ^? key "http_url_to_repo" . _String
   pullProject' value =
     maybe (pure ()) pullGitProject (value ^? key "path" . _String)
 
@@ -80,7 +91,11 @@ main :: IO ()
 main = do
   homeDir <- getCurrentDirectory
   gitlabPath <- createFolderIfNotExists homeDir "gitlab"
-  runReaderT (updateProjects gitlabDownloader (ParN 10) username) gitlabPath
+  let secretsDir  = homeDir </> "secrets" </> "secrets.json"
+  tokensJson <- fromMaybe Null <$> decodeFileStrict' secretsDir
+  let gitlabToken = T.unpack <$> tokensJson ^? key "gitlab_token" . _String
+  flip runReaderT gitlabPath $
+    updateProjects (gitlabDownloader gitlabToken) (ParN 10) username
  where username = "DarinM223"
 
 --resp <- get "http://gitlab.com/api/v4/users/DarinM223/projects"
