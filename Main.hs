@@ -81,15 +81,16 @@ gitlabDownloader accessToken = Downloader
 githubDownloader :: Maybe String -> Downloader (ReaderT FilePath IO) Value
 githubDownloader accessToken = Downloader
   { getProjects     = getProjects'
-  , projectInFolder = undefined
-  , cloneProject    = undefined
-  , pullProject     = undefined
+  , projectInFolder = projectInFolder'
+  , cloneProject    = cloneProject'
+  , pullProject     = pullProject'
   }
  where
   baseUrl = "https://api.github.com"
-  url username = baseUrl ++ "/user/repos"
+  privateUrl token username repo =
+    "https://" <> username <> ":" <> token <> "@github.com/" <> repo <> ".git"
 
-  getProjects' username = liftIO $ go $ url username
+  getProjects' username = liftIO $ go $ baseUrl ++ "/user/repos"
    where
     opts = case accessToken of
       Just token ->
@@ -100,6 +101,18 @@ githubDownloader accessToken = Downloader
       let next   = BS.unpack <$> resp ^? responseLink "rel" "next" . linkURL
           result = resp ^.. responseBody . values
       maybe (pure result) (fmap (result ++) . go) next
+  projectInFolder' value =
+    maybe (pure False) folderExists (value ^? key "name" . _String)
+  cloneProject' value = case (accessToken, namespace, repoName) of
+    (Just token, Just user, Just repo) ->
+      cloneGitProject $ privateUrl (T.pack token) user repo
+    _ -> maybe (pure ()) cloneGitProject urlValue
+   where
+    namespace = value ^? key "owner" . key "login" . _String
+    repoName = value ^? key "full_name" . _String
+    urlValue = value ^? key "html_url" . _String
+  pullProject' value =
+    maybe (pure ()) pullGitProject (value ^? key "name" . _String)
 
 folderExists :: Text -> ReaderT FilePath IO Bool
 folderExists folder = ask >>= liftIO . doesPathExist . (</> T.unpack folder)
@@ -141,8 +154,7 @@ main = do
   let gitlabToken = T.unpack <$> tokensJson ^? key "gitlab_token" . _String
       githubToken = T.unpack <$> tokensJson ^? key "github_token" . _String
   flip runReaderT githubPath $
-    getProjects (githubDownloader githubToken) username >>= liftIO . print
-    --updateProjects (githubDownloader githubToken) (ParN 10) username
+    updateProjects (githubDownloader githubToken) (ParN 10) username
   --flip runReaderT gitlabPath $
   --  updateProjects (gitlabDownloader gitlabToken) (ParN 10) username
  where username = "DarinM223"
