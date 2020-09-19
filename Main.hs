@@ -5,6 +5,7 @@
 module Main where
 
 import Conduit
+import Control.Concurrent.Async (concurrently_)
 import Control.Lens
 import Control.Monad.Reader
 import Control.Monad.Zip (mzip)
@@ -16,6 +17,8 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Network.HTTP.Simple (getResponseBody, httpSource, parseRequest)
 import Network.Wreq
+import System.Environment (getArgs)
+import System.Exit (die)
 import System.FilePath
 import System.Directory
 import System.Process
@@ -185,21 +188,33 @@ linkHeader value = trim . fst . flip splitAt resp <$> elemIndex ';' resp
 
 main :: IO ()
 main = do
-  homeDir <- getCurrentDirectory
+  secretsDir <- getCurrentDirectory
+  let secretsPath  = secretsDir </> "secrets" </> "secrets.json"
+
+  homeDir <- getArgs >>= \case
+    [dir] -> pure dir
+    []    -> getCurrentDirectory
+    _     -> die "Invalid number of arguments"
   let gitlabPath = homeDir </> "gitlab"
       githubPath = homeDir </> "github"
       gistsPath  = homeDir </> "gists"
   createDirectoryIfMissing False gitlabPath
   createDirectoryIfMissing False githubPath
   createDirectoryIfMissing False gistsPath
-  let secretsDir  = homeDir </> "secrets" </> "secrets.json"
-  tokensJson <- fromMaybe Null <$> decodeFileStrict' secretsDir
-  let gitlabToken = T.unpack <$> tokensJson ^? key "gitlab_token" . _String
-      githubToken = T.unpack <$> tokensJson ^? key "github_token" . _String
-  flip runReaderT gistsPath $
-    updateProjects (gistDownloader githubToken) (ParN 1) username
-  --flip runReaderT githubPath $
-  --  updateProjects (githubDownloader githubToken) (ParN 1) username
-  --flip runReaderT gitlabPath $
-  --  updateProjects (gitlabDownloader gitlabToken) (ParN 10) username
- where username = "DarinM223"
+  tokensJson <- fromMaybe Null <$> decodeFileStrict' secretsPath
+  let
+    gitlabToken    = T.unpack <$> tokensJson ^? key "gitlab_token" . _String
+    gitlabUsername = T.unpack <$> tokensJson ^? key "gitlab_username" . _String
+    githubToken    = T.unpack <$> tokensJson ^? key "github_token" . _String
+    githubUsername = T.unpack <$> tokensJson ^? key "github_username" . _String
+  let
+    runGithub = forM_ githubUsername $ \username -> do
+      flip runReaderT gistsPath $
+        updateProjects (gistDownloader githubToken) (ParN 1) username
+      flip runReaderT githubPath $
+        updateProjects (githubDownloader githubToken) (ParN 1) username
+    runGitlab = flip runReaderT gitlabPath $
+      traverse_
+        (updateProjects (gitlabDownloader gitlabToken) (ParN 10))
+        gitlabUsername
+  concurrently_ runGithub runGitlab
