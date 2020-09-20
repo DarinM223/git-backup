@@ -141,18 +141,22 @@ gistDownloader accessToken = Downloader
     maybe (pure False) folderExists (value ^? key "id" . _String)
   cloneProject' value = ask >>= \rootPath ->
     traverse_
-      (liftIO . removeFolderIfExists . (rootPath </>) . T.unpack)
+      (liftIO . createDirectoryIfMissing False . (rootPath </>) . T.unpack)
       (value ^? key "id" . _String)
-   where
-    removeFolderIfExists path =
-      doesPathExist path >>= flip when (removeDirectoryRecursive path)
-  pullProject' value = ask >>= \rootPath ->
+  pullProject' value = ask >>= \rootPath -> liftIO $
     forM_ (value ^? key "id" . _String) $ \gistId -> do
-      let path = rootPath </> T.unpack gistId
-      liftIO $ createDirectoryIfMissing False path
-      traverse_
-        (liftIO . downloadFile path)
-        (value ^.. key "files" . members . _Value)
+      let path        = rootPath </> T.unpack gistId
+          updatedPath = path </> T.unpack gistId
+      doesFileExist updatedPath >>= flip unless (writeFile updatedPath "")
+      updatedFile <- fromMaybe Null <$> decodeFileStrict' updatedPath
+      let updated  = updatedFile ^? key "updated_at" . _String
+          updated' = value ^? key "updated_at" . _String
+      unless (updated == updated') $ do
+        putStrLn $ "Pulling changes for: " ++ T.unpack gistId
+        traverse_
+          (downloadFile path)
+          (value ^.. key "files" . members . _Value)
+        encodeFile updatedPath value
    where
     downloadFile path v = do
       let filenameMaybe = T.unpack <$> v ^? key "filename" . _String
