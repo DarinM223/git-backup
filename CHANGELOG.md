@@ -1,4 +1,4 @@
-# Revision history for git-scraper
+# Revision history for git-backup
 
 ## 0.1.0.0 -- YYYY-mm-dd
 
