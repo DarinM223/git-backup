@@ -35,7 +35,6 @@ executable git-backup
                      , process
                      , scheduler
                      , text
-                     , unliftio-core
                      , wreq
   -- hs-source-dirs:
   ghc-options: -Wall

@@ -32,9 +32,11 @@ data Downloader m a = Downloader
   , pullProject     :: a -> m ()
   }
 
-updateProjects :: MonadUnliftIO m => Downloader m a -> Comp -> String -> m ()
-updateProjects Downloader{..} comp username =
-  getProjects username >>= traverseConcurrently_ comp handleProject
+type TraverseFn m a = (a -> m ()) -> [a] -> m ()
+
+updateProjects :: Monad m => Downloader m a -> TraverseFn m a -> String -> m ()
+updateProjects Downloader{..} traverse' username =
+  getProjects username >>= traverse' handleProject
  where
   handleProject p = projectInFolder p >>= \case
     True  -> pullProject p
@@ -214,11 +216,14 @@ main = do
   let
     runGithub = forM_ githubUsername $ \username -> do
       flip runReaderT gistsPath $
-        updateProjects (gistDownloader githubToken) (ParN 1) username
+        updateProjects (gistDownloader githubToken) githubTraverse username
       flip runReaderT githubPath $
-        updateProjects (githubDownloader githubToken) (ParN 1) username
+        updateProjects (githubDownloader githubToken) githubTraverse username
     runGitlab = flip runReaderT gitlabPath $
       traverse_
-        (updateProjects (gitlabDownloader gitlabToken) (ParN 10))
+        (updateProjects (gitlabDownloader gitlabToken) gitlabTraverse)
         gitlabUsername
   concurrently_ runGithub runGitlab
+ where
+  githubTraverse = traverseConcurrently_ (ParN 1)
+  gitlabTraverse = traverseConcurrently_ (ParN 10)
