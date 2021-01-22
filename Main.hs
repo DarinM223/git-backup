@@ -4,24 +4,43 @@
 {-# LANGUAGE RecordWildCards #-}
 module Main where
 
-import Conduit
+import Conduit ((.|), runConduitRes, sinkFile)
 import Control.Concurrent.Async (concurrently_)
-import Control.Lens
-import Control.Monad.Reader
+import Control.Lens ((&), (^..), (^?), (^.), (?~))
+import Control.Monad (unless, void)
+import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad.Reader (MonadReader (ask), ReaderT (runReaderT), asks)
 import Control.Monad.Zip (mzip)
-import Control.Scheduler
-import Data.Aeson
+import Control.Scheduler (Comp (ParN), traverseConcurrently_)
+import Data.Aeson (Value (Null), decodeFileStrict', encodeFile)
 import Data.Aeson.Lens
+  (AsPrimitive (_String), AsValue (_Value), key, members, values)
+import Data.Foldable (for_, traverse_)
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Network.HTTP.Simple (getResponseBody, httpSource, parseRequest)
 import Network.Wreq
+  ( Response
+  , basicAuth
+  , get
+  , getWith
+  , defaults
+  , auth
+  , linkURL
+  , responseBody
+  , responseHeader
+  , responseLink )
 import System.Environment (getArgs)
 import System.Exit (die)
-import System.FilePath
+import System.FilePath ((</>))
 import System.Directory
+  ( createDirectoryIfMissing
+  , doesFileExist
+  , doesPathExist
+  , getCurrentDirectory )
 import System.Process
+  (CreateProcess (cwd), createProcess, shell, waitForProcess)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Text as T
 
@@ -146,7 +165,7 @@ gistDownloader accessToken = Downloader
       (liftIO . createDirectoryIfMissing False . (rootPath </>) . T.unpack)
       (value ^? key "id" . _String)
   pullProject' value = ask >>= \rootPath -> liftIO $
-    forM_ (value ^? key "id" . _String) $ \gistId -> do
+    for_ (value ^? key "id" . _String) $ \gistId -> do
       let path        = rootPath </> T.unpack gistId
           updatedPath = path </> T.unpack gistId
       doesFileExist updatedPath >>= flip unless (writeFile updatedPath "")
@@ -164,7 +183,7 @@ gistDownloader accessToken = Downloader
       let filenameMaybe = T.unpack <$> v ^? key "filename" . _String
           rawUrlMaybe   = T.unpack <$> v ^? key "raw_url" . _String
           filepathMaybe = (path </>) <$> filenameMaybe
-      forM_ (mzip rawUrlMaybe filepathMaybe) $ \(rawUrl, filepath) -> do
+      for_ (mzip rawUrlMaybe filepathMaybe) $ \(rawUrl, filepath) -> do
         request <- parseRequest rawUrl
         runConduitRes $ httpSource request getResponseBody .| sinkFile filepath
 
@@ -214,16 +233,14 @@ main = do
     githubToken    = T.unpack <$> tokensJson ^? key "github_token" . _String
     githubUsername = T.unpack <$> tokensJson ^? key "github_username" . _String
   let
-    runGithub = forM_ githubUsername $ \username -> do
+    runGithub = for_ githubUsername $ \username -> do
       flip runReaderT gistsPath $
-        updateProjects (gistDownloader githubToken) githubTraverse username
+        updateProjects (gistDownloader githubToken) traverse_ username
       flip runReaderT githubPath $
-        updateProjects (githubDownloader githubToken) githubTraverse username
+        updateProjects (githubDownloader githubToken) traverse_ username
     runGitlab = flip runReaderT gitlabPath $
       traverse_
         (updateProjects (gitlabDownloader gitlabToken) gitlabTraverse)
         gitlabUsername
   concurrently_ runGithub runGitlab
- where
-  githubTraverse = traverseConcurrently_ (ParN 1)
-  gitlabTraverse = traverseConcurrently_ (ParN 10)
+ where gitlabTraverse = traverseConcurrently_ (ParN 10)
