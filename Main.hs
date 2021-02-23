@@ -1,4 +1,3 @@
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -8,7 +7,6 @@ import Conduit ((.|), runConduitRes, sinkFile)
 import Control.Concurrent.Async (concurrently_)
 import Control.Lens ((&), (^..), (^?), (^.), (?~))
 import Control.Monad (unless, void)
-import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Zip (mzip)
 import Control.Scheduler (Comp (ParN), traverseConcurrently_)
 import Data.Aeson (Value (Null), decodeFileStrict', encodeFile)
@@ -102,9 +100,8 @@ gitlabDownloader root accessToken = Downloader{..}
 githubBaseUrl :: String
 githubBaseUrl = "https://api.github.com"
 
-githubRetrievePages
-  :: MonadIO m => String -> Maybe String -> String -> m [Value]
-githubRetrievePages username accessToken = liftIO . go
+githubRetrievePages :: String -> Maybe String -> String -> IO [Value]
+githubRetrievePages username accessToken = go
  where
   opts = case accessToken of
     Just token ->
