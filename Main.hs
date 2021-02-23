@@ -9,7 +9,6 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Lens ((&), (^..), (^?), (^.), (?~))
 import Control.Monad (unless, void)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.Reader (MonadReader (ask), ReaderT (runReaderT), asks)
 import Control.Monad.Zip (mzip)
 import Control.Scheduler (Comp (ParN), traverseConcurrently_)
 import Data.Aeson (Value (Null), decodeFileStrict', encodeFile)
@@ -61,13 +60,8 @@ updateProjects Downloader{..} traverse' username =
     True  -> pullProject p
     False -> cloneProject p >> pullProject p
 
-gitlabDownloader :: Maybe String -> Downloader (ReaderT FilePath IO) Value
-gitlabDownloader accessToken = Downloader
-  { getProjects     = getProjects'
-  , projectInFolder = projectInFolder'
-  , cloneProject    = cloneProject'
-  , pullProject     = pullProject'
-  }
+gitlabDownloader :: FilePath -> Maybe String -> Downloader IO Value
+gitlabDownloader root accessToken = Downloader{..}
  where
   baseUrl = "https://gitlab.com/api/v4"
   projectUrl username = baseUrl ++ "/users/" ++ username ++ "/projects"
@@ -86,24 +80,24 @@ gitlabDownloader accessToken = Downloader
     =  "https://gitlab-ci-token:" <> token <> "@gitlab.com/"
     <> username <> "/" <> repo <> ".git"
 
-  getProjects' username = liftIO $ go $ url username
+  getProjects username = go $ url username
    where
     go link = do
       resp <- get link
       let result = resp ^.. responseBody . values
       maybe (pure result) (fmap (result ++) . go) $ linkHeader resp
-  projectInFolder' value =
-    maybe (pure False) folderExists (value ^? key "path" . _String)
-  cloneProject' value = case (accessToken, namespace, repoName) of
+  projectInFolder value =
+    maybe (pure False) (folderExists root) (value ^? key "path" . _String)
+  cloneProject value = case (accessToken, namespace, repoName) of
     (Just token, Just user, Just repo) ->
-      cloneGitProject $ privateUrl (T.pack token) user repo
-    _ -> maybe (pure ()) cloneGitProject urlValue
+      cloneGitProject root $ privateUrl (T.pack token) user repo
+    _ -> maybe (pure ()) (cloneGitProject root) urlValue
    where
     namespace = value ^? key "namespace" . key "path" . _String
     repoName = value ^? key "path" . _String
     urlValue = value ^? key "http_url_to_repo" . _String
-  pullProject' value =
-    maybe (pure ()) pullGitProject (value ^? key "path" . _String)
+  pullProject value =
+    maybe (pure ()) (pullGitProject root) (value ^? key "path" . _String)
 
 githubBaseUrl :: String
 githubBaseUrl = "https://api.github.com"
@@ -122,62 +116,48 @@ githubRetrievePages username accessToken = liftIO . go
         result = resp ^.. responseBody . values
     maybe (pure result) (fmap (result ++) . go) next
 
-githubDownloader :: Maybe String -> Downloader (ReaderT FilePath IO) Value
-githubDownloader accessToken = Downloader
-  { getProjects     = getProjects'
-  , projectInFolder = projectInFolder'
-  , cloneProject    = cloneProject'
-  , pullProject     = pullProject'
-  }
+githubDownloader :: FilePath -> Maybe String -> Downloader IO Value
+githubDownloader root accessToken = Downloader{..}
  where
   privateUrl token username repo =
     "https://" <> username <> ":" <> token <> "@github.com/" <> repo <> ".git"
 
-  getProjects' username =
+  getProjects username =
     githubRetrievePages username accessToken $ githubBaseUrl ++ "/user/repos"
-  projectInFolder' value =
-    maybe (pure False) folderExists (value ^? key "name" . _String)
-  cloneProject' value = case (accessToken, namespace, repoName) of
+  projectInFolder value =
+    maybe (pure False) (folderExists root)(value ^? key "name" . _String)
+  cloneProject value = case (accessToken, namespace, repoName) of
     (Just token, Just user, Just repo) ->
-      cloneGitProject $ privateUrl (T.pack token) user repo
-    _ -> maybe (pure ()) cloneGitProject urlValue
+      cloneGitProject root $ privateUrl (T.pack token) user repo
+    _ -> maybe (pure ()) (cloneGitProject root) urlValue
    where
     namespace = value ^? key "owner" . key "login" . _String
     repoName = value ^? key "full_name" . _String
     urlValue = value ^? key "html_url" . _String
-  pullProject' value =
-    maybe (pure ()) pullGitProject (value ^? key "name" . _String)
+  pullProject value =
+    maybe (pure ()) (pullGitProject root) (value ^? key "name" . _String)
 
-gistDownloader :: Maybe String -> Downloader (ReaderT FilePath IO) Value
-gistDownloader accessToken = Downloader
-  { getProjects     = getProjects'
-  , projectInFolder = projectInFolder'
-  , cloneProject    = cloneProject'
-  , pullProject     = pullProject'
-  }
+gistDownloader :: FilePath -> Maybe String -> Downloader IO Value
+gistDownloader root accessToken = Downloader{..}
  where
-  getProjects' username =
+  getProjects username =
     githubRetrievePages username accessToken $ githubBaseUrl ++ "/gists"
-  projectInFolder' value =
-    maybe (pure False) folderExists (value ^? key "id" . _String)
-  cloneProject' value = ask >>= \rootPath ->
-    traverse_
-      (liftIO . createDirectoryIfMissing False . (rootPath </>) . T.unpack)
-      (value ^? key "id" . _String)
-  pullProject' value = ask >>= \rootPath -> liftIO $
-    for_ (value ^? key "id" . _String) $ \gistId -> do
-      let path        = rootPath </> T.unpack gistId
-          updatedPath = path </> T.unpack gistId
-      doesFileExist updatedPath >>= flip unless (writeFile updatedPath "")
-      updatedFile <- fromMaybe Null <$> decodeFileStrict' updatedPath
-      let updated  = updatedFile ^? key "updated_at" . _String
-          updated' = value ^? key "updated_at" . _String
-      unless (updated == updated') $ do
-        putStrLn $ "Pulling changes for: " ++ T.unpack gistId
-        traverse_
-          (downloadFile path)
-          (value ^.. key "files" . members . _Value)
-        encodeFile updatedPath value
+  projectInFolder value =
+    maybe (pure False) (folderExists root) (value ^? key "id" . _String)
+  cloneProject value = traverse_
+    (createDirectoryIfMissing False . (root </>) . T.unpack)
+    (value ^? key "id" . _String)
+  pullProject value = for_ (value ^? key "id" . _String) $ \gistId -> do
+    let path        = root </> T.unpack gistId
+        updatedPath = path </> T.unpack gistId
+    doesFileExist updatedPath >>= flip unless (writeFile updatedPath "")
+    updatedFile <- fromMaybe Null <$> decodeFileStrict' updatedPath
+    let updated  = updatedFile ^? key "updated_at" . _String
+        updated' = value ^? key "updated_at" . _String
+    unless (updated == updated') $ do
+      putStrLn $ "Pulling changes for: " ++ T.unpack gistId
+      traverse_ (downloadFile path) (value ^.. key "files" . members . _Value)
+      encodeFile updatedPath value
    where
     downloadFile path v = do
       let filenameMaybe = T.unpack <$> v ^? key "filename" . _String
@@ -187,21 +167,22 @@ gistDownloader accessToken = Downloader
         request <- parseRequest rawUrl
         runConduitRes $ httpSource request getResponseBody .| sinkFile filepath
 
-folderExists :: Text -> ReaderT FilePath IO Bool
-folderExists folder = ask >>= liftIO . doesPathExist . (</> T.unpack folder)
+folderExists :: FilePath -> Text -> IO Bool
+folderExists path folder = doesPathExist $ path </> T.unpack folder
 
-cloneGitProject :: Text -> ReaderT FilePath IO ()
-cloneGitProject url = ask >>= \cwd -> liftIO $ do
+cloneGitProject :: FilePath -> Text -> IO ()
+cloneGitProject cwd url = do
   (_, _, _, p) <- createProcess
     (shell $ "git clone " ++ T.unpack url) { cwd = Just cwd }
   void $ waitForProcess p
 
-pullGitProject :: Text -> ReaderT FilePath IO ()
-pullGitProject folder = asks (</> T.unpack folder) >>= \path -> liftIO $ do
+pullGitProject :: FilePath -> Text -> IO ()
+pullGitProject root folder = do
   (_, _, _, p1) <- createProcess (shell "git fetch --all") { cwd = Just path }
   void $ waitForProcess p1
   (_, _, _, p2) <- createProcess (shell "git pull --all") { cwd = Just path }
   void $ waitForProcess p2
+ where path = root </> T.unpack folder
 
 linkHeader :: Response a -> Maybe String
 linkHeader value = trim . fst . flip splitAt resp <$> elemIndex ';' resp
@@ -233,14 +214,11 @@ main = do
     githubToken    = T.unpack <$> tokensJson ^? key "github_token" . _String
     githubUsername = T.unpack <$> tokensJson ^? key "github_username" . _String
   let
-    runGithub = for_ githubUsername $ \username -> do
-      flip runReaderT gistsPath $
-        updateProjects (gistDownloader githubToken) traverse_ username
-      flip runReaderT githubPath $
-        updateProjects (githubDownloader githubToken) traverse_ username
-    runGitlab = flip runReaderT gitlabPath $
-      traverse_
-        (updateProjects (gitlabDownloader gitlabToken) gitlabTraverse)
-        gitlabUsername
+    runGithub = for_ githubUsername $ \name -> do
+      updateProjects (gistDownloader gistsPath githubToken) traverse_ name
+      updateProjects (githubDownloader githubPath githubToken) traverse_ name
+    runGitlab = traverse_
+      (updateProjects (gitlabDownloader gitlabPath gitlabToken) gitlabTraverse)
+      gitlabUsername
   concurrently_ runGithub runGitlab
  where gitlabTraverse = traverseConcurrently_ (ParN 10)

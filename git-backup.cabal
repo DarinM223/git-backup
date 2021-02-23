@@ -31,7 +31,6 @@ executable git-backup
                      , http-conduit
                      , lens
                      , lens-aeson
-                     , mtl
                      , process
                      , scheduler
                      , text
